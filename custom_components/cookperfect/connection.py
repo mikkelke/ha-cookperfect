@@ -11,9 +11,10 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 from homeassistant.components import bluetooth
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, RETRY_DELAY, TEMPERATURE_UUID
+from .const import DOMAIN, RETRY_DELAY, STALE_AFTER, TEMPERATURE_UUID
 from .parser import parse_temperatures
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class CookPerfectConnection:
         self._task: asyncio.Task[None] | None = None
         self._listeners: set[Callable[[], None]] = set()
         self._cancel_callbacks: list[Callable[[], None]] = []
+        self._cancel_stale: CALLBACK_TYPE | None = None
 
     @callback
     def async_add_listener(self, update: Callable[[], None]) -> Callable[[], None]:
@@ -80,7 +82,7 @@ class CookPerfectConnection:
     ) -> None:
         # A connected receiver stops advertising, so Home Assistant reports it
         # unavailable while notifications keep arriving.
-        if self._client is None:
+        if self._client is None and self._cancel_stale is None:
             self._async_publish(None)
 
     @callback
@@ -88,7 +90,27 @@ class CookPerfectConnection:
         if client is self._client:
             _LOGGER.debug("%s disconnected", self.address)
             self._client = None
+            self._async_mark_stale_later()
+
+    @callback
+    def _async_mark_stale_later(self) -> None:
+        # The link drops for a second or two at a time; readings stay until a reconnect has had time to happen.
+        if self._cancel_stale is None:
+            self._cancel_stale = async_call_later(
+                self._hass, STALE_AFTER, self._async_on_stale
+            )
+
+    @callback
+    def _async_on_stale(self, _now: object) -> None:
+        self._cancel_stale = None
+        if self._client is None:
             self._async_publish(None)
+
+    @callback
+    def _async_cancel_stale(self) -> None:
+        if self._cancel_stale is not None:
+            self._cancel_stale()
+            self._cancel_stale = None
 
     @callback
     def _async_on_notify(
@@ -105,6 +127,7 @@ class CookPerfectConnection:
         except ValueError as err:
             _LOGGER.debug("Ignoring payload from %s: %s", self.address, err)
             return
+        self._async_cancel_stale()
         self._async_publish(temperatures)
 
     @callback
@@ -130,12 +153,17 @@ class CookPerfectConnection:
                 _LOGGER.debug("%s connected", self.address)
             except Exception:
                 _LOGGER.debug("Connecting to %s failed", self.address, exc_info=True)
-                await self._async_disconnect()
+                await self._async_drop_client()
+                self._async_mark_stale_later()
                 await asyncio.sleep(RETRY_DELAY)
 
     async def _async_disconnect(self) -> None:
-        client, self._client = self._client, None
+        self._async_cancel_stale()
+        await self._async_drop_client()
         self._async_publish(None)
+
+    async def _async_drop_client(self) -> None:
+        client, self._client = self._client, None
         if client is not None:
             with suppress(Exception):
                 await client.stop_notify(TEMPERATURE_UUID)

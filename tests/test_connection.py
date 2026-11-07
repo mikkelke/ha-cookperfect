@@ -1,14 +1,17 @@
 """Setup, connection handling and unload of a receiver entry."""
 
 import asyncio
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from custom_components.cookperfect.const import TEMPERATURE_UUID
+from custom_components.cookperfect.const import STALE_AFTER, TEMPERATURE_UUID
 
 from .helpers import (
     ADDRESS,
@@ -93,7 +96,12 @@ async def test_ignores_non_connectable_advertisement(hass, stack, establish):
     assert readings(hass) == UNAVAILABLE
 
 
-async def test_disconnect_hides_readings_and_next_advertisement_reconnects(
+async def pass_stale_window(hass):
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=STALE_AFTER + 1))
+    await hass.async_block_till_done()
+
+
+async def test_disconnect_hides_readings_after_grace_and_next_advertisement_reconnects(
     hass, stack, establish, client
 ):
     await setup(hass)
@@ -103,10 +111,23 @@ async def test_disconnect_hides_readings_and_next_advertisement_reconnects(
     assert readings(hass) == CONNECTED
 
     establish.call_args.kwargs["disconnected_callback"](client)
+    assert readings(hass) == CONNECTED
+    await pass_stale_window(hass)
     assert readings(hass) == UNAVAILABLE
 
     await advertise(hass, stack)
     assert establish.await_count == 2
+    assert readings(hass) == CONNECTED
+
+
+async def test_quick_reconnect_keeps_readings(hass, stack, establish, client):
+    await setup(hass)
+    await advertise(hass, stack)
+    establish.call_args.kwargs["disconnected_callback"](client)
+    await advertise(hass, stack)
+    assert establish.await_count == 2
+
+    await pass_stale_window(hass)
     assert readings(hass) == CONNECTED
 
 
@@ -116,6 +137,8 @@ async def test_notification_after_disconnect_is_ignored(hass, stack, establish, 
     establish.call_args.kwargs["disconnected_callback"](client)
 
     client.notify(PAYLOAD_2)
+    assert readings(hass) == CONNECTED
+    await pass_stale_window(hass)
     assert readings(hass) == UNAVAILABLE
 
 
@@ -153,6 +176,7 @@ async def test_failure_after_connecting_disconnects_and_hides_readings(
         await advertise(hass, stack)
     client.stop_notify.assert_awaited_once_with(TEMPERATURE_UUID)
     client.disconnect.assert_awaited_once_with()
+    await pass_stale_window(hass)
     assert readings(hass) == UNAVAILABLE
 
 
