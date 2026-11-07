@@ -1,0 +1,44 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Choose a receiver",
+        "description": "The receiver switches on when the probe cable is plugged in.",
+        "data": {
+          "address": "Receiver"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Set up {name}? Close the CookPerfect app first, because the receiver accepts only one Bluetooth connection at a time."
+      }
+    },
+    "abort": {
+      "already_configured": "This receiver is already configured.",
+      "already_in_progress": "Setup of this receiver is already in progress.",
+      "no_devices_found": "No CookPerfect receivers found. Plug in the probe cable so the receiver switches on, then try again."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "core_temperature": {
+        "name": "Core temperature"
+      },
+      "ambient_temperature": {
+        "name": "Ambient temperature"
+      },
+      "needle_1": {
+        "name": "Needle 1"
+      },
+      "needle_2": {
+        "name": "Needle 2"
+      },
+      "needle_3": {
+        "name": "Needle 3"
+      },
+      "needle_4": {
+        "name": "Needle 4"
+      }
+    }
+  }
+}
